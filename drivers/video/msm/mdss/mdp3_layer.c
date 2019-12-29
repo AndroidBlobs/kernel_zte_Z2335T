@@ -28,6 +28,7 @@
 #include <soc/qcom/event_timer.h>
 #include "mdp3_ctrl.h"
 #include "mdp3.h"
+#include "mdp3_dma.h"		/* dual spi */
 #include "mdp3_ppp.h"
 #include "mdp3_ctrl.h"
 #include "mdss_fb.h"
@@ -184,16 +185,20 @@ sync_fence_err:
  * __map_layer_buffer() - map input layer buffer
  *
  */
+
 static int __mdp3_map_layer_buffer(struct msm_fb_data_type *mfd,
 		struct mdp_input_layer *input_layer)
 {
 	struct mdp3_session_data *mdp3_session = mfd->mdp.private1;
+#ifdef CONFIG_FB_MSM_MDSS_SPI_PANEL
+	struct mdp3_dma *dma = mdp3_session->dma;
+#endif
 	struct mdp_input_layer *layer = NULL;
 	struct mdp_layer_buffer *buffer;
 	struct msmfb_data img;
 	bool is_panel_type_cmd = false;
 	struct mdp3_img_data data;
-	int rc = 0;
+	int rc = 0, client;
 
 	layer = &input_layer[0];
 	buffer = &layer->buffer;
@@ -210,16 +215,33 @@ static int __mdp3_map_layer_buffer(struct msm_fb_data_type *mfd,
 
 	memset(&data, 0, sizeof(struct mdp3_img_data));
 
+	client = mdp3_get_ion_client(mfd);
+
 	if (mfd->panel.type == MIPI_CMD_PANEL)
 		is_panel_type_cmd = true;
 	if (is_panel_type_cmd) {
-		rc = mdp3_iommu_enable(MDP3_CLIENT_DMA_P);
+		rc = mdp3_iommu_enable(client);
 		if (rc) {
 			pr_err("fail to enable iommu\n");
 			return rc;
 		}
 	}
+#ifdef CONFIG_FB_MSM_MDSS_SPI_PANEL
+	rc = mdp3_get_img(&img, &data, client);
+	if (rc) {
+		pr_err("fail to get overlay buffer\n");
+		goto err;
+	}
 
+	if (data.len < dma->source_config.stride * dma->source_config.height) {
+		pr_err("buf size(0x%lx) is smaller than dma config(0x%x)\n",
+			data.len, (dma->source_config.stride *
+			dma->source_config.height));
+		mdp3_put_img(&data, client);
+		rc = -EINVAL;
+		goto err;
+	}
+#else
 	if (layer->flags & MDP_LAYER_SECURE_DISPLAY_SESSION)
 		data.flags |=  MDP_SECURE_DISPLAY_OVERLAY_SESSION;
 
@@ -229,16 +251,17 @@ static int __mdp3_map_layer_buffer(struct msm_fb_data_type *mfd,
 		goto err;
 	}
 
+#endif
 	rc = mdp3_bufq_push(&mdp3_session->bufq_in, &data);
 	if (rc) {
 		pr_err("fail to queue the overlay buffer, buffer drop\n");
-		mdp3_put_img(&data, MDP3_CLIENT_DMA_P);
+		mdp3_put_img(&data, client);
 		goto err;
 	}
 	rc = 0;
 err:
 	if (is_panel_type_cmd)
-		mdp3_iommu_disable(MDP3_CLIENT_DMA_P);
+		mdp3_iommu_disable(client);
 	return rc;
 }
 
@@ -267,7 +290,7 @@ int mdp3_layer_pre_commit(struct msm_fb_data_type *mfd,
 	struct mdp3_session_data *mdp3_session;
 	struct mdp3_dma *dma;
 	int layer_count = commit->input_layer_cnt;
-	int stride, format;
+	int stride, format, client;
 
 	/* Handle NULL commit */
 	if (!layer_count) {
@@ -280,7 +303,10 @@ int mdp3_layer_pre_commit(struct msm_fb_data_type *mfd,
 
 	mutex_lock(&mdp3_session->lock);
 
-	mdp3_bufq_deinit(&mdp3_session->bufq_in);
+	client = mdp3_get_ion_client(mfd);
+	pr_debug("client =%d\n", client);
+
+	mdp3_bufq_deinit(&mdp3_session->bufq_in, client);
 
 	layer_list = commit->input_layers;
 	layer = &layer_list[0];
@@ -297,6 +323,7 @@ int mdp3_layer_pre_commit(struct msm_fb_data_type *mfd,
 			mdp3_ctrl_get_pack_pattern(layer->buffer.format);
 		dma->update_src_cfg = true;
 	}
+
 	mdp3_session->overlay.id = 1;
 
 	ret = __mdp3_handle_buffer_fences(mfd, commit, layer_list);

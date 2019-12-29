@@ -290,8 +290,21 @@ static void gic_show_resume_irq(struct gic_chip_data *gic)
 
 		pr_warning("%s: %d triggered %s\n", __func__,
 					i + gic->irq_offset, name);
+		/*ZTE_PM++++ show resume irq detail info*/
+		{
+			extern void print_irq_info(int i);
+			print_irq_info(irq);
+		}
+		/*ZTE_PM----*/
 		log_base_wakeup_reason(i + gic->irq_offset);
 	}
+
+	/*added by ZTE show  show vdd_min and sleep clk++++*/
+	{
+		extern void pm_show_rpm_stats(void);
+		pm_show_rpm_stats();
+	}
+	/*added by ZTE  show vdd_min and sleep clk end*/
 }
 
 static void gic_resume_one(struct gic_chip_data *gic)

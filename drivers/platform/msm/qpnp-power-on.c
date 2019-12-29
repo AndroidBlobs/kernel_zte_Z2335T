@@ -29,6 +29,15 @@
 #include <linux/regulator/machine.h>
 #include <linux/regulator/of_regulator.h>
 #include <linux/qpnp/power-on.h>
+/*ZTE_PM add for powerkey print*/
+#include <linux/reboot.h>
+#include <../../include/soc/qcom/socinfo.h>
+
+#if defined(ZTE_HOMEPHONE_ENABLE)
+#include <linux/of_gpio.h>
+#include <linux/gpio.h>
+#include <linux/pinctrl/consumer.h>
+#endif
 
 #define CREATE_MASK(NUM_BITS, POS) \
 	((unsigned char) (((1 << (NUM_BITS)) - 1) << (POS)))
@@ -226,8 +235,101 @@ struct qpnp_pon {
 	bool			store_hard_reset_reason;
 	bool			kpdpwr_dbc_enable;
 	ktime_t			kpdpwr_last_release_time;
+	/*zte_pm add*/
+	struct timer_list timer;
+	struct work_struct pwrkey_poweroff_work;
+	struct work_struct pwrkey_release_work;
+	struct delayed_work check_pwrkey_work;
+	/*zte_pm add*/
+#if defined(ZTE_HOMEPHONE_ENABLE)
+	int pwrkey_det_gpio;
+	enum of_gpio_flags pwrkey_det_gpio_flag;
+	int pwrkey_status;
+	struct delayed_work check_pwrkey_det_gpio_work;
+	struct delayed_work pwrkey_det_gpio_poweroff_work;
+	int resetkey_count;
+#endif
 };
+/*zte_pm add*/
+#define POWER_KEY_CHECK_MS 1000
+#ifndef ZTE_HOMEPHONE_ENABLE
+static void pwrkey_timer(unsigned long data)
+{
+	struct qpnp_pon *pon = (struct qpnp_pon *)data;
 
+	schedule_work(&pon->pwrkey_poweroff_work);
+}
+#endif
+static void pwrkey_poweroff(struct work_struct *work)
+{
+#if defined(ZTE_HOMEPHONE_ENABLE)
+	pr_emerg("power key long pressed, trigger reboot\n");
+	/*kernel_restart("LONGPRESS");*/
+#else
+	pr_info("%s: power key long pressed, trigger reboot\n", __func__);
+	kernel_restart("LONGPRESS");
+#endif
+}
+
+static void pwrkey_release(struct work_struct *work)
+{
+	struct qpnp_pon *pon = container_of(work,
+				struct qpnp_pon, pwrkey_release_work);
+
+	cancel_delayed_work_sync(&pon->check_pwrkey_work);
+}
+
+static void check_pwrkey(struct work_struct *work)
+{
+	u8 pon_rt_sts = 0;
+	int rc = 0;
+	struct delayed_work *dwork = to_delayed_work(work);
+	struct qpnp_pon *pon = container_of(dwork,
+				struct qpnp_pon, check_pwrkey_work);
+
+	rc = spmi_ext_register_readl(pon->spmi->ctrl, pon->spmi->sid,
+			QPNP_PON_RT_STS(pon), &pon_rt_sts, 1);
+	if (rc) {
+		pr_err("%s, Unable to read PON RT status\n", __func__);
+#if defined(ZTE_HOMEPHONE_ENABLE)
+		pon->resetkey_count = 0;
+#else
+		del_timer(&pon->timer);
+#endif
+		return;
+	}
+	if (pon_rt_sts & QPNP_PON_KPDPWR_N_SET) {
+		schedule_delayed_work(&pon->check_pwrkey_work,
+				  round_jiffies_relative(msecs_to_jiffies
+							 (POWER_KEY_CHECK_MS)));
+		pr_emerg("%s, power key not released, check it again\n", __func__);
+#if defined(ZTE_HOMEPHONE_ENABLE)
+		pon->resetkey_count = pon->resetkey_count + 1;
+		pr_emerg("power key not released, check it again(%d)\n", pon->resetkey_count);
+		if (pon->resetkey_count == 2) {
+		    input_report_key(pon->pon_input, KEY_F4, 1);
+		    input_sync(pon->pon_input);
+		    input_report_key(pon->pon_input, KEY_F4, 0);
+		    input_sync(pon->pon_input);
+			/*report rst key*/
+			pr_emerg("report [upgrade] key\n");
+		} else if (pon->resetkey_count == 10) {
+			/*direct reset*/
+			pr_emerg("report [direct-reset] key\n");
+			/*kernel_restart("RST_KEY_LONGPRESS");*/
+		}
+#endif
+	} else {
+#if defined(ZTE_HOMEPHONE_ENABLE)
+		pon->resetkey_count = 0;
+		pr_emerg("power key not pressed, delete timer of power key\n");
+#else
+		del_timer(&pon->timer);
+		pr_emerg("%s, power key not pressed, delete timer of power key\n", __func__);
+#endif
+	}
+}
+/*zte_pm add end*/
 static struct qpnp_pon *sys_reset_dev;
 static DEFINE_SPINLOCK(spon_list_slock);
 static LIST_HEAD(spon_dev_list);
@@ -868,20 +970,88 @@ qpnp_pon_input_dispatch(struct qpnp_pon *pon, u32 pon_type)
 	return 0;
 }
 
+/* zte_pm ============== pwrkey crash ========================== */
+static int pwrkey_crash = 0;
+module_param(pwrkey_crash, int, 0644);
+extern int boot_mode_is_charger(void);
+/* zte_pm */
+#if defined(ZTE_HOMEPHONE_ENABLE)
 static irqreturn_t qpnp_kpdpwr_irq(int irq, void *_pon)
 {
 	int rc;
 	struct qpnp_pon *pon = _pon;
+	u8 pon_rt_sts = 0;
 
-	rc = qpnp_pon_input_dispatch(pon, PON_KPDPWR);
-	if (rc)
-		dev_err(&pon->spmi->dev, "Unable to send input event\n");
+	if (pwrkey_crash == 1)
+		panic("Sorry,  I'm PowerKey Crasher, do panic\n");
+
+	rc = spmi_ext_register_readl(pon->spmi->ctrl, pon->spmi->sid,
+				QPNP_PON_RT_STS(pon), &pon_rt_sts, 1);
+	if (pon_rt_sts & QPNP_PON_KPDPWR_N_SET) {
+		input_report_key(pon->pon_input, KEY_F1, 1);
+		input_sync(pon->pon_input);
+		schedule_delayed_work(&pon->check_pwrkey_work,
+						  round_jiffies_relative(msecs_to_jiffies
+									 (POWER_KEY_CHECK_MS)));
+		pr_err("power key pressed\n");
+	} else {
+
+		input_report_key(pon->pon_input, KEY_F1, 0);
+		input_sync(pon->pon_input);
+		pr_emerg("report [enter-recovery-mode] key\n");
+
+		pon->resetkey_count = 0;
+		schedule_work(&pon->pwrkey_release_work);
+		pr_err("power key released\n");
+	}
 
 	return IRQ_HANDLED;
 }
-
+#else
+static irqreturn_t qpnp_kpdpwr_irq(int irq, void *_pon)
+{
+	int rc;
+	struct qpnp_pon *pon = _pon;
+	/* zte_pm */
+	u8 pon_rt_sts = 0;
+	/* zte_pm */
+	rc = qpnp_pon_input_dispatch(pon, PON_KPDPWR);
+	if (rc)
+		dev_err(&pon->spmi->dev, "Unable to send input event\n");
+	/* zte_pm */
+	rc = spmi_ext_register_readl(pon->spmi->ctrl, pon->spmi->sid,
+				QPNP_PON_RT_STS(pon), &pon_rt_sts, 1);
+	if (pon_rt_sts & QPNP_PON_KPDPWR_N_SET) {
+		if (socinfo_get_ftm_flag() == 1 || socinfo_get_charger_flag() == 1) {
+			pon->timer.expires = jiffies + 3 * HZ;
+			pr_info("%s: FTM mode,start 3s timer for reboot\n", __func__);
+		} else {
+#ifdef CONFIG_ZTE_PWRKEY_16S_RESET
+			pon->timer.expires = jiffies + 16 * HZ;
+			pr_info("%s: Normal mode,start 16s timer for reboot\n", __func__);
+#else
+			pon->timer.expires = jiffies + 10 * HZ;
+			pr_info("%s: Normal mode,start 10s timer for reboot\n", __func__);
+#endif
+		}
+		mod_timer(&pon->timer, pon->timer.expires);
+		schedule_delayed_work(&pon->check_pwrkey_work,
+			round_jiffies_relative(msecs_to_jiffies(POWER_KEY_CHECK_MS)));
+		pr_info("power key pressed\n");
+	} else {
+		del_timer(&pon->timer);
+		schedule_work(&pon->pwrkey_release_work);
+		pr_info("power key released\n");
+	}
+	/* zte_pm */
+	return IRQ_HANDLED;
+}
+#endif
 static irqreturn_t qpnp_kpdpwr_bark_irq(int irq, void *_pon)
 {
+	/* zte_pm */
+	pr_info("power key bark trigger\n");
+	/* zte_pm */
 	return IRQ_HANDLED;
 }
 
@@ -905,7 +1075,9 @@ static irqreturn_t qpnp_cblpwr_irq(int irq, void *_pon)
 {
 	int rc;
 	struct qpnp_pon *pon = _pon;
-
+	/* zte_pm */
+	pr_info("%s qpnp_cblpwr_irq  trigger\n", __func__);
+	/* zte_pm */
 	rc = qpnp_pon_input_dispatch(pon, PON_CBLPWR);
 	if (rc)
 		dev_err(&pon->spmi->dev, "Unable to send input event\n");
@@ -1028,7 +1200,9 @@ static irqreturn_t qpnp_resin_bark_irq(int irq, void *_pon)
 
 	/* disable the bark interrupt */
 	disable_irq_nosync(irq);
-
+	/* zte_pm */
+	pr_info("ZTE_PM resin_bark\n");
+	/* zte_pm */
 	cfg = qpnp_get_cfg(pon, PON_RESIN);
 	if (!cfg) {
 		dev_err(&pon->spmi->dev, "Invalid config pointer\n");
@@ -1269,6 +1443,18 @@ qpnp_pon_config_input(struct qpnp_pon *pon,  struct qpnp_pon_config *cfg)
 	__set_bit(INPUT_PROP_NO_DUMMY_RELEASE, pon->pon_input->propbit);
 	input_set_capability(pon->pon_input, EV_KEY, cfg->key_code);
 
+	/* zte_pm,start */
+#if defined(ZTE_HOMEPHONE_ENABLE)
+	set_bit(KEY_F1, pon->pon_input->keybit);
+	set_bit(KEY_F2, pon->pon_input->keybit);
+	set_bit(KEY_F3, pon->pon_input->keybit);
+	set_bit(KEY_F4, pon->pon_input->keybit);
+	input_set_capability(pon->pon_input, EV_KEY, KEY_F1);
+	input_set_capability(pon->pon_input, EV_KEY, KEY_F2);
+	input_set_capability(pon->pon_input, EV_KEY, KEY_F3);
+	input_set_capability(pon->pon_input, EV_KEY, KEY_F4);
+#endif
+	 /* zte_pm,end */
 	return 0;
 }
 
@@ -1931,6 +2117,87 @@ static void qpnp_pon_debugfs_remove(struct spmi_device *spmi)
 {}
 #endif
 
+#if defined(ZTE_HOMEPHONE_ENABLE)
+
+/*extern int offcharging_flag;
+extern int socinfo_get_pv_flag(void);*/
+static void pwrkey_det_gpio_poweroff(struct work_struct *work)
+{
+	if (socinfo_get_ffbm_flag() == 1)
+		pr_emerg("pwrkey_det_gpio long pressed, reboot/poweroff now![IGNORE PV]\n");
+	else {
+		pr_emerg("pwrkey_det_gpio long pressed, reboot/poweroff now!\n");
+		if (socinfo_get_charger_flag() == 1)
+			kernel_restart("PWRKEY_DET_GPIO ON 10s");
+		else
+			kernel_power_off();
+	}
+}
+
+/*
+In Off mode, Only switch to ON can boot the phone up; switch to OFF will enter offcharging mode.
+In Offcharge mode, the switch will keep to OFF, it change to ON, will boot the phone up
+In Normal mode, switch to OFF, need to power off the phone.
+*/
+#define PWRKEY_DET_ON  0
+#define PWRKEY_DET_OFF 1
+static void check_pwrkey_det_gpio(struct work_struct *work)
+{
+	struct delayed_work *dwork = to_delayed_work(work);
+	struct qpnp_pon *pon = container_of(dwork,
+				struct qpnp_pon, check_pwrkey_det_gpio_work);
+	int detected_key = PWRKEY_DET_OFF;
+
+	if (socinfo_get_charger_flag() == 1)
+		detected_key = PWRKEY_DET_ON;
+	else
+		detected_key = PWRKEY_DET_OFF;
+
+	pon->pwrkey_status = gpio_get_value(pon->pwrkey_det_gpio);
+
+	pr_info("offcharging_flag=%d, interest on (%s) event\n",
+	socinfo_get_charger_flag(), (detected_key == PWRKEY_DET_ON)?"SWITCH_ON":"SWITCH_OFF");
+	pr_info("interest on (%s) event\n", (detected_key == PWRKEY_DET_ON)?"SWITCH_ON":"SWITCH_OFF");
+	pr_info("current_key=%s interest_key=%s\n",
+			(pon->pwrkey_status == PWRKEY_DET_ON)?"SWITCH_ON":"SWITCH_OFF",
+			(detected_key == PWRKEY_DET_ON)?"SWITCH_ON":"SWITCH_OFF");
+
+	if (pon->pwrkey_status == detected_key) {
+		input_report_key(pon->pon_input, KEY_POWER, 1);
+		input_sync(pon->pon_input);
+		input_report_key(pon->pon_input, KEY_F2, 1);
+		input_sync(pon->pon_input);
+		input_report_key(pon->pon_input, KEY_F2, 0);
+		input_sync(pon->pon_input);
+		schedule_delayed_work(&pon->pwrkey_det_gpio_poweroff_work,
+				round_jiffies_relative(msecs_to_jiffies(10*1000)));
+		pr_info("report POWER key press, launch pwrkey_det_gpio_poweroff_work\n");
+	} else {
+		input_report_key(pon->pon_input, KEY_POWER, 0);
+		input_sync(pon->pon_input);
+		input_report_key(pon->pon_input, KEY_F3, 1);
+		input_sync(pon->pon_input);
+		input_report_key(pon->pon_input, KEY_F3, 0);
+		input_sync(pon->pon_input);
+		cancel_delayed_work_sync(&pon->pwrkey_det_gpio_poweroff_work);
+		pr_info("report POWER key release, cancel pwrkey_det_gpio_poweroff_work\n");
+	}
+}
+
+static irqreturn_t pwrkey_det_handler(int irq, void *priv)
+{
+	struct qpnp_pon *pon = priv;
+
+	pr_info("pwrkey_det_handler enter\n");
+	cancel_delayed_work_sync(&pon->check_pwrkey_det_gpio_work);
+	schedule_delayed_work(&pon->check_pwrkey_det_gpio_work,
+			round_jiffies_relative(msecs_to_jiffies(200)));
+
+	return IRQ_HANDLED;
+}
+#endif
+
+
 static int read_gen2_pon_off_reason(struct qpnp_pon *pon, u16 *reason,
 					int *reason_index_offset)
 {
@@ -1984,6 +2251,66 @@ static int read_gen2_pon_off_reason(struct qpnp_pon *pon, u16 *reason,
 	return 0;
 }
 
+static int qpnp_read_wrapper(struct qpnp_pon *pon, u8 *val,
+					u16 base, int count)
+{
+	int rc;
+	struct spmi_device *spmi = pon->spmi;
+
+	rc = spmi_ext_register_readl(spmi->ctrl, spmi->sid, base, val, count);
+	if (rc)
+		pr_err("SPMI read failed rc=%d\n", rc);
+
+	return rc;
+}
+
+static int qpnp_write_wrapper(struct qpnp_pon *pon, u8 *val,
+			u16 base, int count)
+{
+	int rc;
+	struct spmi_device *spmi = pon->spmi;
+
+	rc = spmi_ext_register_writel(spmi->ctrl, spmi->sid, base, val, count);
+	if (rc)
+		pr_err("SPMI write failed rc=%d\n", rc);
+
+	return rc;
+}
+
+static int qpnp_masked_write_base(struct qpnp_pon *pon, u16 addr,
+							u8 mask, u8 val)
+{
+	int rc;
+	u8 reg;
+
+	rc = qpnp_read_wrapper(pon, &reg, addr, 1);
+	if (rc) {
+		pr_err("read failed addr = %03X, rc = %d\n", addr, rc);
+		return rc;
+	}
+	reg &= ~mask;
+	reg |= val & mask;
+	rc = qpnp_write_wrapper(pon, &reg, addr, 1);
+	if (rc)
+		pr_err("write failed addr = %03X, val = %02x, mask = %02x, reg = %02x, rc = %d\n",
+					addr, val, mask, reg, rc);
+
+	return rc;
+}
+
+#define PON_TRIGGER_EN_ADDRESS 0x880
+#define CBLPWR_MASK BIT(6)
+int set_cblpwr_pon_disable(void)
+{
+	int rc;
+
+	rc = qpnp_masked_write_base(sys_reset_dev, PON_TRIGGER_EN_ADDRESS, CBLPWR_MASK, 0);
+	if (rc)
+		pr_err("Unable to disable cblpwr rc=%d\n", rc);
+
+	return rc;
+}
+
 static int qpnp_pon_probe(struct spmi_device *spmi)
 {
 	struct qpnp_pon *pon;
@@ -2015,6 +2342,45 @@ static int qpnp_pon_probe(struct spmi_device *spmi)
 	}
 
 	pon->spmi = spmi;
+
+#if defined(ZTE_HOMEPHONE_ENABLE)
+	if (of_find_property(spmi->dev.of_node, "zte,pwrkey-det-gpio", NULL)) {
+		pon->pwrkey_det_gpio = of_get_named_gpio_flags(spmi->dev.of_node,
+				"zte,pwrkey-det-gpio", 0, &pon->pwrkey_det_gpio_flag);
+		if (!gpio_is_valid(pon->pwrkey_det_gpio)) {
+			if (pon->pwrkey_det_gpio != -EPROBE_DEFER)
+				pr_err("failed to get pwrkey_det_gpio config gpio=%d\n",
+						pon->pwrkey_det_gpio);
+			return pon->pwrkey_det_gpio;
+		}
+		rc = devm_gpio_request(&spmi->dev, pon->pwrkey_det_gpio, "pwrkey_det_gpio");
+		if (rc) {
+			pr_err("failed to request pwrkey_det_gpio rc=%d\n", rc);
+			return rc;
+		}
+	}
+	INIT_DELAYED_WORK(&pon->check_pwrkey_det_gpio_work, check_pwrkey_det_gpio);
+	INIT_DELAYED_WORK(&pon->pwrkey_det_gpio_poweroff_work, pwrkey_det_gpio_poweroff);
+
+	pr_info("pwrkey_det_gpio request success\n");
+	rc = request_threaded_irq(gpio_to_irq(pon->pwrkey_det_gpio),
+					NULL,
+					pwrkey_det_handler,
+					IRQF_TRIGGER_RISING |
+					IRQF_TRIGGER_FALLING |
+					IRQF_ONESHOT,
+					"pwrkey_det",
+					pon);
+	if (rc)
+		pr_info("request_threaded_irq failed, error=%d\n", rc);
+
+	rc = enable_irq_wake(gpio_to_irq(pon->pwrkey_det_gpio));
+	if (rc) {
+		pr_info("could not irq_set_irq_wake for detect pin\n");
+	}
+		schedule_delayed_work(&pon->check_pwrkey_det_gpio_work,
+				round_jiffies_relative(msecs_to_jiffies(1000*10)));
+#endif
 
 	pon_resource = spmi_get_resource(spmi, NULL, IORESOURCE_MEM, 0);
 	if (!pon_resource) {
@@ -2232,7 +2598,16 @@ static int qpnp_pon_probe(struct spmi_device *spmi)
 	dev_set_drvdata(&spmi->dev, pon);
 
 	INIT_DELAYED_WORK(&pon->bark_work, bark_work_func);
-
+	/* zte_pm */
+#ifndef ZTE_HOMEPHONE_ENABLE
+	init_timer(&pon->timer);
+	pon->timer.data = (unsigned long)pon;
+	pon->timer.function = pwrkey_timer;
+#endif
+	INIT_WORK(&pon->pwrkey_poweroff_work, pwrkey_poweroff);
+	INIT_WORK(&pon->pwrkey_release_work, pwrkey_release);
+	INIT_DELAYED_WORK(&pon->check_pwrkey_work, check_pwrkey);
+	/* zte_pm */
 	/* register the PON configurations */
 	rc = qpnp_pon_config_init(pon);
 	if (rc) {

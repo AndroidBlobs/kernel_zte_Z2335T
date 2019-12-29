@@ -31,7 +31,13 @@
 #include "mdss_panel.h"
 #include "mdss_mdp.h"
 
+/*zte modify begin,for lcd esd check error ctrl,20180228 */
+#ifdef CONFIG_ZTE_LCD_ESD_ERROR_CTRL
+#define STATUS_CHECK_INTERVAL_MS 2500
+#else
 #define STATUS_CHECK_INTERVAL_MS 5000
+#endif
+/*zte modify end,for lcd esd check error ctrl,20180228 */
 #define STATUS_CHECK_INTERVAL_MIN_MS 50
 #define DSI_STATUS_CHECK_INIT -1
 #define DSI_STATUS_CHECK_DISABLE 1
@@ -144,15 +150,19 @@ static int fb_event_callback(struct notifier_block *self,
 		return NOTIFY_DONE;
 
 	mfd = evdata->info->par;
-	ctrl_pdata = container_of(dev_get_platdata(&mfd->pdev->dev),
-				struct mdss_dsi_ctrl_pdata, panel_data);
-	if (!ctrl_pdata) {
-		pr_err("%s: DSI ctrl not available\n", __func__);
-		return NOTIFY_BAD;
+
+	if (mfd->panel_info->type == SPI_PANEL) {
+		pinfo = mfd->panel_info;
+	} else {
+		ctrl_pdata = container_of(dev_get_platdata(&mfd->pdev->dev),
+					struct mdss_dsi_ctrl_pdata, panel_data);
+		if (!ctrl_pdata) {
+			pr_err("%s: DSI ctrl not available\n", __func__);
+			return NOTIFY_BAD;
+		}
+
+		pinfo = &ctrl_pdata->panel_data.panel_info;
 	}
-
-	pinfo = &ctrl_pdata->panel_data.panel_info;
-
 	if ((!(pinfo->esd_check_enabled) &&
 			dsi_status_disable) ||
 			(dsi_status_disable == DSI_STATUS_CHECK_DISABLE)) {

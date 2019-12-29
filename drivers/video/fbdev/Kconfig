@@ -2502,8 +2502,8 @@ config FB_SSD1307
 	  This driver implements support for the Solomon SSD1307
 	  OLED controller over I2C.
 
-config FB_ST7735S
-	tristate "Sitronix ST7735S framebuffer support"
+config MDSS_SPI_SECOND_PANEL
+	tristate "SECOND SPI PANEL ST7735S support"
 	depends on FB && SPI
 	depends on OF
 	depends on GPIOLIB
@@ -2511,6 +2511,11 @@ config FB_ST7735S
 	select FB_SYS_FILLRECT
 	select FB_SYS_COPYAREA
 	select FB_SYS_IMAGEBLIT
+	help
+	  This driver implements support for the ST7735S
+	  LCD controller over SPI.
+config FB_ST7735S
+	tristate "Sitronix ST7735S framebuffer support"
 	select FB_DEFERRED_IO
 	select PWM
 	help
@@ -2531,3 +2536,15 @@ config FB_UC1617S
 	help
 	  This driver implements support for the Rocktech UC1617 Monochrome
 	  LCD controller over SPI.
+
+config ZTE_LCD_CHARON_SKYWORTH_BOE_PANEL
+	tristate "CHARON SKYWORTH SPI PANEL ST7735S support"
+	depends on MDSS_SPI_SECOND_PANEL
+	help
+	  This is support for CHARON SKYWORTH BOE PANEL
+
+config ZTE_LCD_CHARON_COE_IVO_PANEL
+	tristate "CHARON COE IVO SPI PANEL ST7735S support"
+	depends on MDSS_SPI_SECOND_PANEL
+	help
+	  This is support for CHARON COE IVO PANEL
