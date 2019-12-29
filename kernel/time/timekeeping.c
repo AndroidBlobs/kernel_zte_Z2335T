@@ -1672,6 +1672,21 @@ void getboottime(struct timespec *ts)
 }
 EXPORT_SYMBOL_GPL(getboottime);
 
+/*ZTE_PM ++++*/
+#ifndef CONFIG_ZTE_PLATFORM_SLEEPTIME
+#define CONFIG_ZTE_PLATFORM_SLEEPTIME 1
+#endif
+#ifdef CONFIG_ZTE_PLATFORM_SLEEPTIME
+void zte_get_total_suspend(struct timespec *ts)
+{
+	/*
+	*ts =  timekeeper.total_sleep_time;
+	*/
+}
+EXPORT_SYMBOL_GPL(zte_get_total_suspend);
+#endif
+/*ZTE_PM ----*/
+
 unsigned long get_seconds(void)
 {
 	struct timekeeper *tk = &tk_core.timekeeper;
