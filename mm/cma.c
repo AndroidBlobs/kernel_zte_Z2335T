@@ -55,6 +55,29 @@ unsigned long cma_get_size(const struct cma *cma)
 	return cma->count << PAGE_SHIFT;
 }
 
+/*get lostRam begin */
+unsigned long cma_used(void)
+{
+	struct cma *cma;
+	unsigned long used;
+	int i;
+	unsigned long total_size = 0;
+
+	for (i = 0; i < cma_area_count; i++) {
+		cma = &cma_areas[i];
+		mutex_lock(&cma->lock);
+		/* pages counter is smaller than sizeof(int) */
+		used = bitmap_weight(cma->bitmap, (int)cma_bitmap_maxno(cma));
+		mutex_unlock(&cma->lock);
+		used = used << cma->order_per_bit;
+		total_size += used;
+	}
+
+	return total_size;
+}
+
+/*get lostRam end */
+
 static unsigned long cma_bitmap_aligned_mask(const struct cma *cma,
 					     unsigned int align_order)
 {
