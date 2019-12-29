@@ -63,6 +63,15 @@
 #define MAX_PATH_LEN		64
 #define MAX_DEVICES		8
 
+/*ZTE_MODIFY add resuid and resgid support*/
+#define F2FS_DEF_RESUID 0
+#define F2FS_DEF_RESGID 0
+/*ZTE_MODIFY end*/
+/*ZTE_MODIFY add for compatibility*/
+#define ZTE_F2FS_VERSION "ZTE1.0"
+#define ZTE_F2FS_VERSION_LEN 8
+/*ZTE_MODIFY end*/
+
 /*
  * For superblock
  */
@@ -111,7 +120,14 @@ struct f2fs_super_block {
 	__u8 encrypt_pw_salt[16];	/* Salt used for string2key algorithm */
 	struct f2fs_device devs[MAX_DEVICES];	/* device list */
 	__le32 qf_ino[F2FS_MAX_QUOTAS];	/* quota inode numbers */
-	__u8 reserved[315];		/* valid reserved region */
+	__u8 reserved[299];	/* valid reserved region */
+	/*ZTE_MODIFY add reserve segments for root users*/
+	__le32 s_resv_segments;
+	__le16 s_def_resuid;
+	__le16 s_def_resgid;
+	/*ZTE_MODIFY end*/
+	/*ZTE_MODIFY add for compatibility*/
+	__u8 zte_version[ZTE_F2FS_VERSION_LEN];
 } __packed;
 
 /*
@@ -212,6 +228,9 @@ struct f2fs_extent {
 #define F2FS_DATA_EXIST		0x08	/* file inline data exist flag */
 #define F2FS_INLINE_DOTS	0x10	/* file having implicit dot dentries */
 #define F2FS_EXTRA_ATTR		0x20	/* file having extra attribute */
+/* zte-modify: chenshaohua for google's patch for disable GC for specific file, 20180327 */
+#define F2FS_PIN_FILE		0x40	/* file should not be gced */
+/* end modify */
 
 struct f2fs_inode {
 	__le16 i_mode;			/* file mode */
@@ -229,7 +248,15 @@ struct f2fs_inode {
 	__le32 i_ctime_nsec;		/* change time in nano scale */
 	__le32 i_mtime_nsec;		/* modification time in nano scale */
 	__le32 i_generation;		/* file version (for NFS) */
-	__le32 i_current_depth;		/* only for directory depth */
+	/* zte-modify: chenshaohua for google's patch for disable GC for specific file, 20180327 */
+	union {
+		__le32 i_current_depth;	/* only for directory depth */
+		__le16 i_gc_failures;	/*
+					 * # of gc failures on pinned file.
+					 * only for regular files.
+					 */
+	};
+	/* end modify */
 	__le32 i_xattr_nid;		/* nid to save xattr */
 	__le32 i_flags;			/* file attributes */
 	__le32 i_pino;			/* parent inode number */
