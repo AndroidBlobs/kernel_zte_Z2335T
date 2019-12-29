@@ -596,6 +596,7 @@ static struct clk_freq_tbl ftbl_gcc_blsp1_qup1_6_spi_apps_clk[] = {
 	F( 16000000,	gpll0,	10,	1,	5),
 	F( 19200000,	xo,	1,	0,	0),
 	F( 25000000,	gpll0,	16,	1,	2),
+	F( 40000000,	gpll0,	10,	1,	2),
 	F( 50000000,	gpll0,	16,	0,	0),
 	F_END
 };
@@ -814,6 +815,10 @@ static struct rcg_clk blsp1_uart2_apps_clk_src = {
 };
 
 static struct clk_freq_tbl ftbl_gcc_camss_gp0_1_clk[] = {
+	F( 9600,	xo,	10,	1,	200),
+	F( 24000,	xo,	16,	1,	50),
+	F( 14400,	xo,	16,	3,	250),
+	F( 30000,	xo,	10,	1,	64),
 	F( 100000000,	gpll0,	8,	0,	0),
 	F( 200000000,	gpll0,	4,	0,	0),
 	F_END
@@ -849,6 +854,7 @@ static struct rcg_clk camss_gp1_clk_src = {
 
 static struct clk_freq_tbl ftbl_gcc_camss_mclk0_1_clk[] = {
 	F( 24000000,	gpll2,	1,	1,	33),
+	F( 27200000,	gpll2,	1,	17,	495),
 	F( 66670000,	gpll0,	12,	0,	0),
 	F_END
 };
@@ -2635,6 +2641,58 @@ static void gcc_gfx3d_fmax(struct platform_device *pdev)
 	mclk1_clk_src.c.fmax = mclk0_1_fmax;
 }
 
+#ifdef ZTE_FEATURE_USE_GPIO_PWM
+unsigned int *gcc_mm_gp0_d_address = NULL;
+unsigned int *gcc_mm_gp0_cmd_rcgr  = NULL;
+unsigned int *gcc_mm_gp0_cbcr = NULL;
+struct clk *gpio31_clk_struct = NULL;
+struct device *device_gpio31 = NULL;
+void zte_set_gpio31_pwm_duty(int level)
+{
+	static int last_bl_levle = 0;
+	static int gpio31_clk_enabled = 1;
+
+	pr_info("zte_set_gpio31_pwm_duty\n");
+
+	if (last_bl_levle == level)
+		return;
+
+	last_bl_levle = level;
+
+	if (gpio31_clk_struct == NULL) {
+		gpio31_clk_struct = devm_clk_get(device_gpio31, "client_clk");
+		if (IS_ERR(gpio31_clk_struct)) {
+			pr_err("get gpio31_clk_struct Error: %lu\n", PTR_ERR(gpio31_clk_struct));
+			gpio31_clk_struct = NULL;
+			return;
+		}
+
+		clk_set_rate(gpio31_clk_struct, 30000);
+	}
+
+	if (level == 0) {
+		if (gpio31_clk_enabled == 1) {
+			clk_disable_unprepare(gpio31_clk_struct);
+			gpio31_clk_enabled = 0;
+			return;
+		}
+	} else {
+		if (level >= 98)
+		     level = 98;
+
+		if (gpio31_clk_enabled == 0) {
+		   clk_prepare_enable(gpio31_clk_struct);
+		   gpio31_clk_enabled = 1;
+		}
+
+		gcc_mm_gp0_d_address[0] = (~(50 * level / 50)) & 0xff;
+		mb();/*mb*/
+		gcc_mm_gp0_cmd_rcgr[0] = 0x3;
+		mb();/*mb*/
+	}
+
+}
+#endif
 static int msm_gcc_probe(struct platform_device *pdev)
 {
 	struct resource *res;
@@ -2770,7 +2828,47 @@ static struct platform_driver msm_clock_gcc_driver = {
 		.owner = THIS_MODULE,
 	},
 };
+#ifdef ZTE_FEATURE_USE_GPIO_PWM
+static int client_clk_probe(struct platform_device *pdev)
+{
+	int ret = -1;
 
+	pr_info("zte client_clk_probe\n");
+	gcc_mm_gp0_d_address = (unsigned int *)(((unsigned char *)virt_bases[GCC_BASE]) + 0x54010);
+	gcc_mm_gp0_cmd_rcgr = (unsigned int *)(((unsigned char *)virt_bases[GCC_BASE]) + 0x54000);
+	gcc_mm_gp0_cbcr = (unsigned int *)(((unsigned char *)virt_bases[GCC_BASE])  + 0x54018);
+
+	device_gpio31 = &pdev->dev;
+	gpio31_clk_struct = devm_clk_get(&pdev->dev, "client_clk");
+	if (IS_ERR(gpio31_clk_struct)) {
+		pr_err("get gpio31_clk_struct Error: %lu\n", PTR_ERR(gpio31_clk_struct));
+		gpio31_clk_struct = NULL;
+		return ret;
+	}
+
+
+	ret = clk_set_rate(gpio31_clk_struct, 30000);
+	pr_info("added by 10175298 :%s:%i ret=%d\n", __func__, __LINE__, ret);
+	ret = clk_prepare_enable(gpio31_clk_struct);
+	pr_info("added by 10175298 :%s:%i ret=%d\n", __func__, __LINE__, ret);
+	zte_set_gpio31_pwm_duty(60);
+
+	return ret;
+}
+static const struct of_device_id client_clk_dt_match[] = {
+		{ .compatible = "qcom,client_clk",},
+		{}
+};
+static struct platform_driver client_clk_driver = {
+		.probe    = client_clk_probe,
+		.shutdown = NULL,
+		.driver = {
+				.name           = "client_clk",
+				.owner = THIS_MODULE,
+				.of_match_table = client_clk_dt_match,
+		},
+};
+#endif
 static int __init msm_gcc_init(void)
 {
 	return platform_driver_register(&msm_clock_gcc_driver);
@@ -2908,6 +3006,9 @@ static struct platform_driver msm_clock_gcc_mdss_driver = {
 
 static int __init msm_gcc_mdss_init(void)
 {
+#ifdef ZTE_FEATURE_USE_GPIO_PWM
+	platform_driver_register(&client_clk_driver);
+#endif
 	return platform_driver_register(&msm_clock_gcc_mdss_driver);
 }
 fs_initcall_sync(msm_gcc_mdss_init);
