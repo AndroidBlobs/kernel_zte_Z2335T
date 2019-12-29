@@ -110,6 +110,10 @@ static ssize_t power_supply_show_property(struct device *dev,
 		return sprintf(buf, "%s\n", charge_type[value.intval]);
 	else if (off == POWER_SUPPLY_PROP_HEALTH)
 		return sprintf(buf, "%s\n", health_text[value.intval]);
+#if defined(CONFIG_BOARD_SWEET)
+	else if (off == POWER_SUPPLY_PROP_BATTERY_HEALTH)
+		return sprintf(buf, "%s\n", health_text[value.intval]);
+#endif
 	else if (off == POWER_SUPPLY_PROP_TECHNOLOGY)
 		return sprintf(buf, "%s\n", technology_text[value.intval]);
 	else if (off == POWER_SUPPLY_PROP_CAPACITY_LEVEL)
@@ -284,6 +288,9 @@ static struct device_attribute power_supply_attrs[] = {
 	POWER_SUPPLY_ATTR(soc_reporting_ready),
 	POWER_SUPPLY_ATTR(ignore_false_negative_isense),
 	POWER_SUPPLY_ATTR(enable_jeita_detection),
+#if defined(CONFIG_BOARD_SWEET)
+	POWER_SUPPLY_ATTR(battery_health),
+#endif
 	POWER_SUPPLY_ATTR(battery_info),
 	POWER_SUPPLY_ATTR(battery_info_id),
 	POWER_SUPPLY_ATTR(typec_cc_orientation),
@@ -309,6 +316,13 @@ static struct device_attribute power_supply_attrs[] = {
 	POWER_SUPPLY_ATTR(real_type),
 	/* Local extensions of type int64_t */
 	POWER_SUPPLY_ATTR(charge_counter_ext),
+	POWER_SUPPLY_ATTR(bms_status),
+	POWER_SUPPLY_ATTR(bms_flags),
+	POWER_SUPPLY_ATTR(bms_rc),
+	POWER_SUPPLY_ATTR(qmax),
+	POWER_SUPPLY_ATTR(tfcc),
+	POWER_SUPPLY_ATTR(trc),
+	POWER_SUPPLY_ATTR(soh),
 	/* Properties of type `const char *' */
 	POWER_SUPPLY_ATTR(model_name),
 	POWER_SUPPLY_ATTR(manufacturer),
