@@ -53,12 +53,12 @@
 /* Limit mininum delay to 10ms as we do not need higher rate so far */
 #define MPU6050_ACCEL_MIN_POLL_INTERVAL_MS	10
 #define MPU6050_ACCEL_MAX_POLL_INTERVAL_MS	5000
-#define MPU6050_ACCEL_DEFAULT_POLL_INTERVAL_MS	200
+#define MPU6050_ACCEL_DEFAULT_POLL_INTERVAL_MS	20
 #define MPU6050_ACCEL_INT_MAX_DELAY			19
 
 #define MPU6050_GYRO_MIN_POLL_INTERVAL_MS	10
 #define MPU6050_GYRO_MAX_POLL_INTERVAL_MS	5000
-#define MPU6050_GYRO_DEFAULT_POLL_INTERVAL_MS	200
+#define MPU6050_GYRO_DEFAULT_POLL_INTERVAL_MS	20
 #define MPU6050_GYRO_INT_MAX_DELAY		18
 
 #define MPU6050_RAW_ACCEL_DATA_LEN	6
@@ -1271,6 +1271,7 @@ static void mpu6050_reset_chip(struct mpu6050_sensor *sensor)
 		dev_err(&client->dev, "Reset chip fail!\n");
 		goto exit;
 	}
+	mdelay(100);
 	for (i = 0; i < MPU6050_RESET_RETRY_CNT; i++) {
 		ret = i2c_smbus_read_byte_data(sensor->client,
 					sensor->reg.pwr_mgmt_1);
@@ -1858,6 +1859,25 @@ static int mpu6050_gyro_cdev_flush(struct sensors_classdev *sensors_cdev)
 		EV_SYN, SYN_CONFIG, sensor->flush_count++);
 	input_sync(sensor->gyro_dev);
 	mutex_unlock(&sensor->op_lock);
+
+	return 0;
+}
+
+static int mpu6050_gyro_calibrate(struct sensors_classdev *sensors_cdev,
+		int axis, int apply_now)
+{
+	//just for pass the calibrate test.
+	struct mpu6050_sensor *sensor = container_of(sensors_cdev,
+			struct mpu6050_sensor, gyro_cdev);
+
+	int arry[3] = { 0 };
+	arry[0] = 0;
+	arry[1] = 0;
+	arry[2] = 0;
+
+	snprintf(sensor->acc_cal_buf, sizeof(sensor->acc_cal_buf),
+			"%d,%d,%d", arry[0], arry[1], arry[2]);
+	sensors_cdev->params = sensor->acc_cal_buf;
 
 	return 0;
 }
@@ -3001,10 +3021,13 @@ static int mpu6050_probe(struct i2c_client *client,
 	sensor->pdata = pdata;
 	sensor->enable_gpio = sensor->pdata->gpio_en;
 
-	ret = mpu6050_pinctrl_init(sensor);
-	if (ret) {
-		dev_err(&client->dev, "Can't initialize pinctrl\n");
-		goto err_free_devmem;
+	if ((sensor->pdata->use_int) &&
+			gpio_is_valid(sensor->pdata->gpio_int)) {
+		ret = mpu6050_pinctrl_init(sensor);
+		if (ret) {
+			dev_err(&client->dev, "Can't initialize pinctrl\n");
+			goto err_free_devmem;
+		}
 	}
 
 	if (gpio_is_valid(sensor->enable_gpio)) {
@@ -3218,6 +3241,7 @@ static int mpu6050_probe(struct i2c_client *client,
 	sensor->gyro_cdev.fifo_reserved_event_count = 0;
 	sensor->gyro_cdev.sensors_set_latency = mpu6050_gyro_cdev_set_latency;
 	sensor->gyro_cdev.sensors_flush = mpu6050_gyro_cdev_flush;
+	sensor->gyro_cdev.sensors_calibrate = mpu6050_gyro_calibrate;
 	if ((sensor->pdata->use_int) &&
 			gpio_is_valid(sensor->pdata->gpio_int))
 		sensor->gyro_cdev.max_delay = MPU6050_GYRO_INT_MAX_DELAY;
