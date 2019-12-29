@@ -2532,8 +2532,13 @@ static int unix_seq_show(struct seq_file *seq, void *v)
 			 "Inode Path\n");
 	else {
 		struct sock *s = v;
+		struct sock *peer;
 		struct unix_sock *u = unix_sk(s);
 		unix_state_lock(s);
+		peer = unix_peer(s);
+		unix_state_unlock(s);
+
+		unix_state_double_lock(s, peer);
 
 		seq_printf(seq, "%pK: %08X %08X %08X %04X %02X %5lu",
 			s,
@@ -2560,8 +2565,11 @@ static int unix_seq_show(struct seq_file *seq, void *v)
 			}
 			for ( ; i < len; i++)
 				seq_putc(seq, u->addr->name->sun_path[i]);
+		} else if (peer) {
+			seq_printf(seq, " peer=%lu", sock_i_ino(peer));
 		}
-		unix_state_unlock(s);
+
+		unix_state_double_unlock(s, peer);
 		seq_putc(seq, '\n');
 	}
 
