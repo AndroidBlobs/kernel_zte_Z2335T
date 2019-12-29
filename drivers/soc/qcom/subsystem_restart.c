@@ -41,6 +41,8 @@
 
 #include "peripheral-loader.h"
 
+#define SUBSYSTEM_RAMDUMP_FLUSH_TIME        5000
+
 #define DISABLE_SSR 0x9889deed
 /* If set to 0x9889deed, call to subsystem_restart_dev() returns immediately */
 static uint disable_restart_work;
@@ -773,9 +775,22 @@ static int subsys_start(struct subsys_device *subsys)
 	return ret;
 }
 
+/*ZTE_MODIFY, get modem status before sending qmi command, start*/
+#ifdef CONFIG_LEDS_MSM_QMI
+extern void set_modem_rebooting_value(void);
+#endif
+/*ZTE_MODIFY, get modem status before sending qmi command, end*/
 static void subsys_stop(struct subsys_device *subsys)
 {
 	const char *name = subsys->desc->name;
+
+	/*ZTE_MODIFY, get modem status before sending qmi command, start */
+	#ifdef CONFIG_LEDS_MSM_QMI
+	pr_info("[%s]: subsys_stop %s\n", current->comm, name);
+	if (!strcmp(name, "modem"))
+		set_modem_rebooting_value();
+	#endif
+	/*ZTE_MODIFY, get modem status before sending qmi command, end */
 
 	if (!of_property_read_bool(subsys->desc->dev->of_node,
 					"qcom,pil-force-shutdown")) {
@@ -845,6 +860,11 @@ void *__subsystem_get(const char *name, const char *fw_name)
 
 	track = subsys_get_track(subsys);
 	mutex_lock(&track->lock);
+	if (!strcmp(subsys->desc->name, "modem")) {
+		pr_err("%s %s cnt:%d\n", __func__, subsys->desc->name, subsys->count);
+		WARN_ON(1);
+	}
+
 	if (!subsys->count) {
 		if (fw_name) {
 			pr_info("Changing subsys fw_name to %s\n", fw_name);
@@ -1076,6 +1096,41 @@ static void device_restart_work_hdlr(struct work_struct *work)
 	struct subsys_device *dev = container_of(work, struct subsys_device,
 							device_restart_work);
 
+	if (enable_ramdumps) {
+		struct subsys_device **list;
+		struct subsys_soc_restart_order *order = dev->restart_order;
+		unsigned count;
+
+		/*
+		 * It's OK to not take the registration lock at this point.
+		 * This is because the subsystem list inside the relevant
+		 * restart order is not being traversed.
+		 */
+		if (order) {
+			list = order->subsys_ptrs;
+			count = order->count;
+		} else {
+			list = &dev;
+			count = 1;
+		}
+
+		pr_info("device_restart_work_hdlr start to dump\n");
+
+		mutex_lock(&soc_order_reg_lock);
+
+		notify_each_subsys_device(list, count, SUBSYS_BEFORE_SHUTDOWN, NULL);
+		for_each_subsys_device(list, count, NULL, subsystem_shutdown);
+		notify_each_subsys_device(list, count, SUBSYS_AFTER_SHUTDOWN, NULL);
+
+		notify_each_subsys_device(list, count, SUBSYS_RAMDUMP_NOTIFICATION,
+				NULL);
+		/* Collect ram dumps for all subsystems in order here */
+		for_each_subsys_device(list, count, NULL, subsystem_ramdump);
+		mutex_unlock(&soc_order_reg_lock);
+
+		msleep_interruptible(SUBSYSTEM_RAMDUMP_FLUSH_TIME);
+	}
+
 	notify_each_subsys_device(&dev, 1, SUBSYS_SOC_RESET, NULL);
 	/*
 	 * Temporary workaround until ramdump userspace application calls
@@ -1263,6 +1318,9 @@ static int subsys_device_close(struct inode *inode, struct file *file)
 	if (!subsys_dev)
 		return -EINVAL;
 
+	if (subsys_dev->desc)
+		if (!strcmp(subsys_dev->desc->name, "modem"))
+			subsys_dev->count = 1;
 	subsystem_put(subsys_dev);
 	return 0;
 }
