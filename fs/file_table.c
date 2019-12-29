@@ -459,6 +459,8 @@ void __init files_init(unsigned long mempages)
 
 	n = (mempages * (PAGE_SIZE / 1024)) / 10;
 	files_stat.max_files = max_t(unsigned long, n, NR_FILE);
+	/*max_files is too small for 512M devices*/
+	files_stat.max_files = max_t(unsigned long, files_stat.max_files, 80000);
 	percpu_counter_init(&nr_files, 0, GFP_KERNEL);
 	global_filetable_print_warning_once();
 } 

@@ -1790,9 +1790,9 @@ static int __insert_free_nid(struct f2fs_sb_info *sbi,
 {
 	struct f2fs_nm_info *nm_i = NM_I(sbi);
 
-	int err = radix_tree_insert(&nm_i->free_nid_root, i->nid, i);
-	if (err)
-		return err;
+		int err = radix_tree_insert(&nm_i->free_nid_root, i->nid, i);
+		if (err)
+			return err;
 
 	f2fs_bug_on(sbi, state != i->state);
 	nm_i->nid_cnt[state]++;
@@ -1809,8 +1809,8 @@ static void __remove_free_nid(struct f2fs_sb_info *sbi,
 	f2fs_bug_on(sbi, state != i->state);
 	nm_i->nid_cnt[state]--;
 	if (state == FREE_NID)
-		list_del(&i->list);
-	radix_tree_delete(&nm_i->free_nid_root, i->nid);
+	list_del(&i->list);
+		radix_tree_delete(&nm_i->free_nid_root, i->nid);
 }
 
 static void __move_free_nid(struct f2fs_sb_info *sbi, struct free_nid *i,
@@ -1831,7 +1831,7 @@ static void __move_free_nid(struct f2fs_sb_info *sbi, struct free_nid *i,
 		list_add_tail(&i->list, &nm_i->free_nid_list);
 		break;
 	default:
-		BUG_ON(1);
+		WARN_ON(1);
 	}
 }
 

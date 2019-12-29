@@ -20,11 +20,13 @@
 #include <linux/uaccess.h>
 #include <linux/mount.h>
 #include <linux/pagevec.h>
-#include <linux/uio.h>
 #include <linux/random.h>
 #include <linux/aio.h>
 #include <linux/uuid.h>
 #include <linux/file.h>
+
+/* zte,add,chenwei20170515,bigapp */
+#include <linux/uio.h>
 
 #include "f2fs.h"
 #include "node.h"
@@ -61,7 +63,6 @@ static int f2fs_vm_page_mkwrite(struct vm_area_struct *vma,
 		err = -EIO;
 		goto err;
 	}
-
 	sb_start_pagefault(inode->i_sb);
 
 	f2fs_bug_on(sbi, f2fs_has_inline_data(inode));
@@ -462,7 +463,6 @@ static int f2fs_file_mmap(struct file *file, struct vm_area_struct *vma)
 
 	if (unlikely(f2fs_cp_error(F2FS_I_SB(inode))))
 		return -EIO;
-
 	/* we don't need to use inline_data strictly */
 	err = f2fs_convert_inline_inode(inode);
 	if (err)
@@ -1193,6 +1193,7 @@ static int f2fs_collapse_range(struct inode *inode, loff_t offset, loff_t len)
 	ret = truncate_blocks(inode, new_size, true);
 	if (!ret)
 		f2fs_i_size_write(inode, new_size);
+
 out_unlock:
 	up_write(&F2FS_I(inode)->dio_rwsem[WRITE]);
 out:
@@ -1409,6 +1410,7 @@ static int f2fs_insert_range(struct inode *inode, loff_t offset, loff_t len)
 		f2fs_i_size_write(inode, new_size);
 
 	up_write(&F2FS_I(inode)->dio_rwsem[WRITE]);
+
 out:
 	up_write(&F2FS_I(inode)->i_mmap_sem);
 	return ret;
@@ -2471,6 +2473,85 @@ static int f2fs_ioc_get_features(struct file *filp, unsigned long arg)
 	return put_user(sb_feature, (u32 __user *)arg);
 }
 
+/* zte-modify: chenshaohua for google's patch for disable GC for specific file, 20180327 */
+int f2fs_pin_file_control(struct inode *inode, bool inc)
+{
+	struct f2fs_inode_info *fi = F2FS_I(inode);
+	struct f2fs_sb_info *sbi = F2FS_I_SB(inode);
+
+	/* Use i_gc_failures for normal file as a risk signal. */
+	if (inc)
+		f2fs_i_gc_failures_write(inode, fi->i_gc_failures + 1);
+
+	if (fi->i_gc_failures > sbi->gc_pin_file_threshold) {
+		f2fs_msg(sbi->sb, KERN_WARNING,
+			"%s: Enable GC = ino %lx after %x GC trials\n",
+			__func__, inode->i_ino, fi->i_gc_failures);
+		clear_inode_flag(inode, FI_PIN_FILE);
+		return -EAGAIN;
+	}
+	return 0;
+}
+
+static int f2fs_ioc_set_pin_file(struct file *filp, unsigned long arg)
+{
+	struct inode *inode = file_inode(filp);
+	__u32 pin;
+	int ret = 0;
+
+	if (!inode_owner_or_capable(inode))
+		return -EACCES;
+
+	if (get_user(pin, (__u32 __user *)arg))
+		return -EFAULT;
+
+	if (!S_ISREG(inode->i_mode))
+		return -EINVAL;
+
+	if (f2fs_readonly(F2FS_I_SB(inode)->sb))
+		return -EROFS;
+
+	ret = mnt_want_write_file(filp);
+	if (ret)
+		return ret;
+
+	inode_lock(inode);
+
+	if (!pin) {
+		clear_inode_flag(inode, FI_PIN_FILE);
+		F2FS_I(inode)->i_gc_failures = 1;
+		goto done;
+	}
+
+	if (f2fs_pin_file_control(inode, false)) {
+		ret = -EAGAIN;
+		goto out;
+	}
+	ret = f2fs_convert_inline_inode(inode);
+	if (ret)
+		goto out;
+
+	set_inode_flag(inode, FI_PIN_FILE);
+	ret = F2FS_I(inode)->i_gc_failures;
+done:
+	f2fs_update_time(F2FS_I_SB(inode), REQ_TIME);
+out:
+	inode_unlock(inode);
+	mnt_drop_write_file(filp);
+	return ret;
+}
+
+static int f2fs_ioc_get_pin_file(struct file *filp, unsigned long arg)
+{
+	struct inode *inode = file_inode(filp);
+	__u32 pin = 0;
+
+	if (is_inode_flag_set(inode, FI_PIN_FILE))
+		pin = F2FS_I(inode)->i_gc_failures;
+	return put_user(pin, (u32 __user *)arg);
+}
+/* end modify */
+
 long f2fs_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 {
 	if (unlikely(f2fs_cp_error(F2FS_I_SB(file_inode(filp)))))
@@ -2517,6 +2598,12 @@ long f2fs_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 		return f2fs_ioc_flush_device(filp, arg);
 	case F2FS_IOC_GET_FEATURES:
 		return f2fs_ioc_get_features(filp, arg);
+	/* zte-modify: chenshaohua for google's patch for disable GC for specific file, 20180327 */
+	case F2FS_IOC_GET_PIN_FILE:
+		return f2fs_ioc_get_pin_file(filp, arg);
+	case F2FS_IOC_SET_PIN_FILE:
+		return f2fs_ioc_set_pin_file(filp, arg);
+	/* end modify */
 	default:
 		return -ENOTTY;
 	}
@@ -2537,13 +2624,15 @@ static ssize_t f2fs_file_write_iter(struct kiocb *iocb, struct iov_iter *from)
 	inode_lock(inode);
 	ret = generic_write_checks(file, &pos, &count, S_ISBLK(inode->i_mode));
 	if (!ret) {
+		/* zte,modify,chenwei,20170515,bigapp,begin */
 		int err;
 
 		if (iov_iter_fault_in_readable(from, iov_iter_count(from)))
 			set_inode_flag(inode, FI_NO_PREALLOC);
 
 		err = f2fs_preallocate_blocks(inode, pos, count,
-				file->f_flags & O_DIRECT);
+			file->f_flags & O_DIRECT);
+		/* zte,modify,chenwei,20170515,bigapp,end */
 		if (err) {
 			clear_inode_flag(inode, FI_NO_PREALLOC);
 			inode_unlock(inode);
@@ -2552,6 +2641,7 @@ static ssize_t f2fs_file_write_iter(struct kiocb *iocb, struct iov_iter *from)
 		blk_start_plug(&plug);
 		ret = __generic_file_write_iter(iocb, from);
 		blk_finish_plug(&plug);
+		/* zte,modify,chenwei,20170515,bigapp */
 		clear_inode_flag(inode, FI_NO_PREALLOC);
 
 		if (ret > 0)
@@ -2598,6 +2688,10 @@ long f2fs_compat_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 	case F2FS_IOC_MOVE_RANGE:
 	case F2FS_IOC_FLUSH_DEVICE:
 	case F2FS_IOC_GET_FEATURES:
+	/* zte-modify: chenshaohua for google's patch for disable GC for specific file, 20180327 */
+	case F2FS_IOC_GET_PIN_FILE:
+	case F2FS_IOC_SET_PIN_FILE:
+	/* end modify */
 		break;
 	default:
 		return -ENOIOCTLCMD;

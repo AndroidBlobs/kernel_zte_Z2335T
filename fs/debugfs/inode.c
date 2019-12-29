@@ -28,7 +28,7 @@
 #include <linux/magic.h>
 #include <linux/slab.h>
 
-#define DEBUGFS_DEFAULT_MODE	0700
+#define DEBUGFS_DEFAULT_MODE	0755
 
 static struct vfsmount *debugfs_mount;
 static int debugfs_mount_count;
@@ -672,7 +672,6 @@ bool debugfs_initialized(void)
 	return debugfs_registered;
 }
 EXPORT_SYMBOL_GPL(debugfs_initialized);
-
 
 static struct kobject *debug_kobj;
 

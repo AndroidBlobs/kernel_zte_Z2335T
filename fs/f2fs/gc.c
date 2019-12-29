@@ -23,12 +23,30 @@
 #include "gc.h"
 #include <trace/events/f2fs.h>
 
+/*ZTE_MODIFY start, if BDF is low, start urgent gc*/
+static bool need_urgent_gc(struct f2fs_sb_info *sbi)
+{
+	if (has_not_enough_free_secs(sbi, 0, 0))
+		return true;
+
+	if (f2fs_is_bdf_low(sbi))
+		return true;
+
+	return false;
+}
+/*ZTE_MODIFY end*/
+
 static int gc_thread_func(void *data)
 {
 	struct f2fs_sb_info *sbi = data;
 	struct f2fs_gc_kthread *gc_th = sbi->gc_thread;
 	wait_queue_head_t *wq = &sbi->gc_thread->gc_wait_queue_head;
 	unsigned int wait_ms;
+
+	/*ZTE_MODIFY start*/
+	/*record whether gc thread is waked up by writing gc_urgent sys node*/
+	unsigned int is_urgent_waked = 0;
+	/*ZTE_MODIFY end*/
 
 	wait_ms = gc_th->min_sleep_time;
 
@@ -40,8 +58,12 @@ static int gc_thread_func(void *data)
 				msecs_to_jiffies(wait_ms));
 
 		/* give it a try one time */
-		if (gc_th->gc_wake)
+		if (gc_th->gc_wake) {
 			gc_th->gc_wake = 0;
+			/*ZTE_MODIFY start, the gc thread is waked up by urgent gc need requested by user*/
+			is_urgent_waked = 1;
+			/*ZTE_MODIFY end*/
+		}
 
 		if (try_to_freeze())
 			continue;
@@ -79,7 +101,10 @@ static int gc_thread_func(void *data)
 		if (!mutex_trylock(&sbi->gc_mutex))
 			goto next;
 
-		if (gc_th->gc_urgent) {
+		/*ZTE_MODIFY start, if gc_urgent is true and gc thread is waked up by user,
+		  *do gc immediately without checking whether device is idle or not
+		  */
+		if (gc_th->gc_urgent && is_urgent_waked) {
 			wait_ms = gc_th->urgent_sleep_time;
 			goto do_gc;
 		}
@@ -94,6 +119,20 @@ static int gc_thread_func(void *data)
 			decrease_sleep_time(gc_th, &wait_ms);
 		else
 			increase_sleep_time(gc_th, &wait_ms);
+
+/*ZTE_MODIFY start, adjust wait_ms according to current value of BDF*/
+#ifdef CONFIG_F2FS_STAT_FS
+		update_sit_info(sbi);
+		/*if BDF is low, start urgent gc, try to do bg gc more aggressively*/
+		if (need_urgent_gc(sbi)) {
+			gc_th->gc_urgent = 1;
+			wait_ms = gc_th->urgent_sleep_time;
+		} else {
+			gc_th->gc_urgent = 0;
+		}
+#endif
+/*ZTE_MODIFY end*/
+
 do_gc:
 		stat_inc_bggc_count(sbi);
 
@@ -132,7 +171,7 @@ int start_gc_thread(struct f2fs_sb_info *sbi)
 
 	gc_th->gc_idle = 0;
 	gc_th->gc_urgent = 0;
-	gc_th->gc_wake= 0;
+	gc_th->gc_wake = 0;
 
 	sbi->gc_thread = gc_th;
 	init_waitqueue_head(&sbi->gc_thread->gc_wait_queue_head);
@@ -624,6 +663,13 @@ static void move_data_block(struct inode *inode, block_t bidx,
 	if (f2fs_is_atomic_file(inode))
 		goto out;
 
+	/* zte-modify: chenshaohua for google's patch for disable GC for specific file, 20180327 */
+	if (f2fs_is_pinned_file(inode)) {
+		f2fs_pin_file_control(inode, true);
+		goto out;
+	}
+	/* end modify */
+
 	set_new_dnode(&dn, inode, NULL, NULL, 0);
 	err = get_dnode_of_data(&dn, bidx, LOOKUP_NODE);
 	if (err)
@@ -720,7 +766,13 @@ static void move_data_page(struct inode *inode, block_t bidx, int gc_type,
 
 	if (f2fs_is_atomic_file(inode))
 		goto out;
-
+	/* zte-modify: chenshaohua for google's patch for disable GC for specific file, 20180327 */
+	if (f2fs_is_pinned_file(inode)) {
+		if (gc_type == FG_GC)
+			f2fs_pin_file_control(inode, true);
+		goto out;
+	}
+	/* end modify */
 	if (gc_type == BG_GC) {
 		if (PageWriteback(page))
 			goto out;
@@ -994,6 +1046,12 @@ int f2fs_gc(struct f2fs_sb_info *sbi, bool sync,
 		.iroot = RADIX_TREE_INIT(GFP_NOFS),
 	};
 
+/*ZTE_MODIFY start, if bdf is low, try to garbage collect more times*/
+#ifdef CONFIG_F2FS_STAT_FS
+	int iter = 0;
+#endif
+/*ZTE_MODIFY end*/
+
 	trace_f2fs_gc_begin(sbi->sb, sync, background,
 				get_pages(sbi, F2FS_DIRTY_NODES),
 				get_pages(sbi, F2FS_DIRTY_DENTS),
@@ -1048,7 +1106,15 @@ gc_more:
 		sbi->cur_victim_sec = NULL_SEGNO;
 
 	if (!sync) {
-		if (has_not_enough_free_secs(sbi, sec_freed, 0)) {
+		/*ZTE_MODIFY start, if bdf is low, try to garbage collect more times*/
+#ifdef CONFIG_F2FS_STAT_FS
+		if (has_not_enough_free_secs(sbi, sec_freed, 0) ||
+			(++iter <= BG_GC_ISSUE_RATE))
+#else
+		if (has_not_enough_free_secs(sbi, sec_freed, 0))
+#endif
+		{
+/*ZTE_MODIFY end*/
 			segno = NULL_SEGNO;
 			goto gc_more;
 		}
@@ -1091,7 +1157,9 @@ void build_gc_manager(struct f2fs_sb_info *sbi)
 
 	sbi->fggc_threshold = div64_u64((main_count - ovp_count) *
 				BLKS_PER_SEC(sbi), (main_count - resv_count));
-
+	/* zte-modify: chenshaohua for google's patch for disable GC for specific file, 20180327 */
+	sbi->gc_pin_file_threshold = DEF_GC_FAILED_PINNED_FILES;
+	/* end modify */
 	/* give warm/cold data area from slower device */
 	if (sbi->s_ndevs && sbi->segs_per_sec == 1)
 		SIT_I(sbi)->last_victim[ALLOC_NEXT] =

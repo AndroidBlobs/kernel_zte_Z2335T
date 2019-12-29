@@ -1267,7 +1267,7 @@ skip:
 
 	blk_finish_plug(&plug);
 	mutex_unlock(&dcc->cmd_lock);
-}
+			}
 
 static int __issue_discard_cmd(struct f2fs_sb_info *sbi,
 					struct discard_policy *dpolicy)

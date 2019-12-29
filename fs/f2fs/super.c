@@ -128,6 +128,10 @@ enum {
 	Opt_jqfmt_vfsold,
 	Opt_jqfmt_vfsv0,
 	Opt_jqfmt_vfsv1,
+	/*ZTE_MODIFY add resuid and resgid mount options support*/
+	Opt_resgid,
+	Opt_resuid,
+	/*ZTE_MODIFY end*/
 	Opt_err,
 };
 
@@ -178,6 +182,10 @@ static match_table_t f2fs_tokens = {
 	{Opt_jqfmt_vfsold, "jqfmt=vfsold"},
 	{Opt_jqfmt_vfsv0, "jqfmt=vfsv0"},
 	{Opt_jqfmt_vfsv1, "jqfmt=vfsv1"},
+	/*ZTE_MODIFY add resuid and resgid mount options support*/
+	{Opt_resgid, "resgid=%u"},
+	{Opt_resuid, "resuid=%u"},
+	/*ZTE_MODIFY end*/
 	{Opt_err, NULL},
 };
 
@@ -240,7 +248,7 @@ static int f2fs_set_qf_name(struct super_block *sb, int qtype,
 				 QTYPE2NAME(qtype));
 		goto errout;
 	}
-	if (strchr(qname, '/')) {
+	if (strnchr(qname, strlen(qname), '/')) {
 		f2fs_msg(sb, KERN_ERR,
 			"quotafile must be on filesystem root");
 		goto errout;
@@ -281,7 +289,7 @@ static int f2fs_check_quota_options(struct f2fs_sb_info *sbi)
 					!f2fs_sb_has_project_quota(sbi->sb)) {
 		f2fs_msg(sbi->sb, KERN_ERR, "Project quota feature not enabled. "
 			 "Cannot enable project quota enforcement.");
-		return -1;
+		return -EINVAL;
 	}
 	if (sbi->s_qf_names[USRQUOTA] || sbi->s_qf_names[GRPQUOTA] ||
 			(F2FS_MAXQUOTAS > 2 && sbi->s_qf_names[PRJQUOTA])) {
@@ -299,13 +307,13 @@ static int f2fs_check_quota_options(struct f2fs_sb_info *sbi)
 				test_opt(sbi, PRJQUOTA)) {
 			f2fs_msg(sbi->sb, KERN_ERR, "old and new quota "
 					"format mixing");
-			return -1;
+			return -EINVAL;
 		}
 
 		if (!sbi->s_jquota_fmt) {
 			f2fs_msg(sbi->sb, KERN_ERR, "journaled quota format "
 					"not specified");
-			return -1;
+			return -EINVAL;
 		}
 	}
 
@@ -318,7 +326,7 @@ static int f2fs_check_quota_options(struct f2fs_sb_info *sbi)
 		f2fs_msg(sbi->sb, KERN_INFO,
 			 "Filesystem with quota feature cannot be mounted RDWR "
 			 "without CONFIG_QUOTA");
-		return -1;
+		return -EINVAL;
 	}
 	return 0;
 }
@@ -330,6 +338,10 @@ static int parse_options(struct super_block *sb, char *options)
 	struct request_queue *q;
 	substring_t args[MAX_OPT_ARGS];
 	char *p, *name;
+	/*ZTE_MODIFY add resuid and resgid mount options support*/
+	kuid_t uid;
+	kgid_t gid;
+	/*ZTE_MODIFY end*/
 	int arg = 0;
 #ifdef CONFIG_QUOTA
 	int ret;
@@ -630,6 +642,28 @@ static int parse_options(struct super_block *sb, char *options)
 					"quota operations not supported");
 			break;
 #endif
+		/*ZTE_MODIFY add resuid and resgid mount options support*/
+		case Opt_resuid:
+			if (args->from && match_int(args, &arg))
+				return -EINVAL;
+			uid = make_kuid(current_user_ns(), arg);
+			if (!uid_valid(uid)) {
+				f2fs_msg(sb, KERN_ERR, "Invalid uid value %d", arg);
+				return -EPERM;
+			}
+			sbi->s_resuid = uid;
+			break;
+		case Opt_resgid:
+			if (args->from && match_int(args, &arg))
+				return -EINVAL;
+			gid = make_kgid(current_user_ns(), arg);
+			if (!gid_valid(gid)) {
+				f2fs_msg(sb, KERN_ERR, "Invalid gid value %d", arg);
+				return -EPERM;
+			}
+			sbi->s_resgid = gid;
+			break;
+		/*ZTE_MODIFY end*/
 		default:
 			f2fs_msg(sb, KERN_ERR,
 				"Unrecognized mount option \"%s\" or missing value",
@@ -1020,9 +1054,12 @@ static int f2fs_statfs(struct dentry *dentry, struct kstatfs *buf)
 	buf->f_bsize = sbi->blocksize;
 
 	buf->f_blocks = total_count - start_count;
-	buf->f_bfree = user_block_count - valid_user_blocks(sbi) + ovp_count;
-	buf->f_bavail = user_block_count - valid_user_blocks(sbi) -
-						sbi->current_reserved_blocks;
+	/*ZTE_MODIFY start, the overprovison segments are reserved for gc, userspace processes cann't use them*/
+	buf->f_bfree = user_block_count - valid_user_blocks(sbi) - sbi->current_reserved_blocks;
+	buf->f_bavail = buf->f_bfree - f2fs_r_blocks_count(sbi);
+	if (buf->f_bfree < f2fs_r_blocks_count(sbi))
+		buf->f_bavail = 0;
+	/*ZTE_MODIFY end*/
 
 	avail_node_count = sbi->total_node_count - F2FS_RESERVED_NODE_NUM;
 
@@ -1168,6 +1205,15 @@ static int f2fs_show_options(struct seq_file *seq, struct dentry *root)
 		seq_puts(seq, ",prjquota");
 #endif
 	f2fs_show_quota_options(seq, sbi->sb);
+	/*ZTE_MODIFY add resuid and resgid mount options support*/
+	if (!uid_eq(sbi->s_resuid, make_kuid(&init_user_ns, F2FS_DEF_RESUID)) ||
+		le16_to_cpu(sbi->raw_super->s_def_resuid) != F2FS_DEF_RESUID)
+		seq_printf(seq, ",resuid=%u", from_kuid_munged(&init_user_ns, sbi->s_resuid));
+
+		if (!gid_eq(sbi->s_resgid, make_kgid(&init_user_ns, F2FS_DEF_RESGID)) ||
+			le16_to_cpu(sbi->raw_super->s_def_resgid) != F2FS_DEF_RESGID)
+			seq_printf(seq, ",resgid=%u", from_kgid_munged(&init_user_ns, sbi->s_resgid));
+	/*ZTE_MODIFY end*/
 
 	return 0;
 }
@@ -1225,6 +1271,10 @@ static int f2fs_remount(struct super_block *sb, int *flags, char *data)
 	char *s_qf_names[F2FS_MAXQUOTAS];
 	int i, j;
 #endif
+	/*ZTE_MODIFY add resuid and resgid mount options support*/
+	kuid_t s_resuid;
+	kgid_t s_resgid;
+	/*ZTE_MODIFY end*/
 
 	/*
 	 * Save the old mount options in case we
@@ -1233,7 +1283,10 @@ static int f2fs_remount(struct super_block *sb, int *flags, char *data)
 	org_mount_opt = sbi->mount_opt;
 	old_sb_flags = sb->s_flags;
 	active_logs = sbi->active_logs;
-
+	/*ZTE_MODIFY add resuid and resgid mount options support*/
+	s_resuid = sbi->s_resuid;
+	s_resgid = sbi->s_resgid;
+	/*ZTE_MODIFY end*/
 #ifdef CONFIG_QUOTA
 	s_jquota_fmt = sbi->s_jquota_fmt;
 	for (i = 0; i < F2FS_MAXQUOTAS; i++) {
@@ -1367,6 +1420,10 @@ restore_opts:
 #endif
 	sbi->mount_opt = org_mount_opt;
 	sbi->active_logs = active_logs;
+	/*ZTE_MODIFY add resuid and resgid mount options support*/
+	sbi->s_resuid = s_resuid;
+	sbi->s_resgid = s_resgid;
+	/*ZTE_MODIFY end*/
 	sb->s_flags = old_sb_flags;
 #ifdef CONFIG_F2FS_FAULT_INJECTION
 	sbi->fault_info = ffi;
@@ -1398,7 +1455,7 @@ static ssize_t f2fs_quota_read(struct super_block *sb, int type, char *data,
 	while (toread > 0) {
 		tocopy = min_t(unsigned long, sb->s_blocksize - offset, toread);
 repeat:
-		page = read_mapping_page(mapping, blkidx, NULL);
+		page = read_cache_page_gfp(mapping, blkidx, GFP_NOFS);
 		if (IS_ERR(page)) {
 			if (PTR_ERR(page) == -ENOMEM) {
 				congestion_wait(BLK_RW_ASYNC, HZ/50);
@@ -1527,7 +1584,7 @@ static int f2fs_quota_enable(struct super_block *sb, int type, int format_id,
 	unsigned long qf_inum;
 	int err;
 
-	BUG_ON(!f2fs_sb_has_quota_ino(sb));
+	WARN_ON(!f2fs_sb_has_quota_ino(sb));
 
 	qf_inum = f2fs_qf_ino(sb, type);
 	if (!qf_inum)
@@ -1788,13 +1845,8 @@ static const struct fscrypt_operations f2fs_cryptops = {
 	.key_prefix	= "f2fs:",
 	.get_context	= f2fs_get_context,
 	.set_context	= f2fs_set_context,
-	.is_encrypted	= f2fs_encrypted_inode,
 	.empty_dir	= f2fs_empty_dir,
 	.max_namelen	= f2fs_max_namelen,
-};
-#else
-static const struct fscrypt_operations f2fs_cryptops = {
-	.is_encrypted	= f2fs_encrypted_inode,
 };
 #endif
 
@@ -2014,14 +2066,6 @@ static int sanity_check_raw_super(struct f2fs_sb_info *sbi,
 		f2fs_msg(sb, KERN_INFO,
 			"Invalid blocksize (%u), supports only 4KB\n",
 			blocksize);
-		return 1;
-	}
-
-	/* check log blocks per segment */
-	if (le32_to_cpu(raw_super->log_blocks_per_seg) != 9) {
-		f2fs_msg(sb, KERN_INFO,
-			"Invalid log blocks per segment (%u)\n",
-			le32_to_cpu(raw_super->log_blocks_per_seg));
 		return 1;
 	}
 
@@ -2505,6 +2549,12 @@ try_onemore:
 	}
 #endif
 	default_options(sbi);
+
+	/*ZTE_MODIFY add resuid and resgid support*/
+	sbi->s_resuid = make_kuid(&init_user_ns, le16_to_cpu(raw_super->s_def_resuid));
+	sbi->s_resgid = make_kgid(&init_user_ns, le16_to_cpu(raw_super->s_def_resgid));
+	/*ZTE_MODIFY end*/
+
 	/* parse mount options */
 	options = kstrdup((const char *)data, GFP_KERNEL);
 	if (data && !options) {
@@ -2534,7 +2584,9 @@ try_onemore:
 #endif
 
 	sb->s_op = &f2fs_sops;
+#ifdef CONFIG_F2FS_FS_ENCRYPTION
 	sb->s_cop = &f2fs_cryptops;
+#endif
 	sb->s_xattr = f2fs_xattr_handlers;
 	sb->s_export_op = &f2fs_export_ops;
 	sb->s_magic = F2FS_SUPER_MAGIC;
