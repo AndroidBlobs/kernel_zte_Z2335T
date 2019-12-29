@@ -74,6 +74,11 @@ static int32_t msm_buf_mngr_get_buf(struct msm_buf_mngr_device *dev,
 	new_entry->session_id = buf_info->session_id;
 	new_entry->stream_id = buf_info->stream_id;
 	new_entry->index = new_entry->vb2_buf->v4l2_buf.index;
+	#ifndef CONFIG_GSI_RECORDING_HIT
+	spin_lock_irqsave(&dev->buf_q_spinlock, flags);
+	list_add_tail(&new_entry->entry, &dev->buf_qhead);
+	spin_unlock_irqrestore(&dev->buf_q_spinlock, flags);
+	#endif
 	buf_info->index = new_entry->vb2_buf->v4l2_buf.index;
 	if (buf_info->type == MSM_CAMERA_BUF_MNGR_BUF_USER) {
 		mutex_lock(&dev->cont_mutex);
@@ -86,6 +91,7 @@ static int32_t msm_buf_mngr_get_buf(struct msm_buf_mngr_device *dev,
 		}
 		mutex_unlock(&dev->cont_mutex);
 	}
+	#ifdef CONFIG_GSI_RECORDING_HIT
 	if (!rc) {
 		spin_lock_irqsave(&dev->buf_q_spinlock, flags);
 		list_add_tail(&new_entry->entry, &dev->buf_qhead);
@@ -95,6 +101,7 @@ static int32_t msm_buf_mngr_get_buf(struct msm_buf_mngr_device *dev,
 			new_entry->vb2_buf);
 		kfree(new_entry);
 	}
+        #endif
 
 	return rc;
 }
@@ -171,6 +178,14 @@ static int32_t msm_buf_mngr_buf_done(struct msm_buf_mngr_device *buf_mngr_dev,
 		}
 	}
 	spin_unlock_irqrestore(&buf_mngr_dev->buf_q_spinlock, flags);
+	#ifdef CONFIG_GSI_RECORDING_HIT
+	if (ret != 0) {
+		spin_lock_irqsave(&buf_mngr_dev->buf_q_spinlock, flags);
+		list_for_each_entry_safe(bufs, save, &buf_mngr_dev->buf_qhead, entry) {
+		}
+		spin_unlock_irqrestore(&buf_mngr_dev->buf_q_spinlock, flags);
+	}
+	#endif
 	return ret;
 }
 

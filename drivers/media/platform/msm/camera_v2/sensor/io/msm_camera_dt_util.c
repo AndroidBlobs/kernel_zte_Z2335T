@@ -33,14 +33,14 @@ int msm_camera_fill_vreg_params(struct camera_vreg_t *cam_vreg,
 	int      j = 0;
 
 	/* Validate input parameters */
-	if (!cam_vreg || !power_setting) {
+	if (!power_setting) {
 		pr_err("%s:%d failed: cam_vreg %pK power_setting %pK", __func__,
 			__LINE__,  cam_vreg, power_setting);
 		return -EINVAL;
 	}
 
 	/* Validate size of num_vreg */
-	if (num_vreg <= 0) {
+	if (num_vreg < 0) {
 		pr_err("failed: num_vreg %d", num_vreg);
 		return -EINVAL;
 	}
@@ -1548,12 +1548,20 @@ int msm_camera_power_up(struct msm_camera_power_ctrl_t *ctrl,
 					ctrl->clk_info_size);
 				goto power_up_failed;
 			}
+
 			if (power_setting->config_val)
 				ctrl->clk_info[power_setting->seq_val].
 					clk_rate = power_setting->config_val;
-			rc = msm_camera_clk_enable(ctrl->dev,
-				ctrl->clk_info, ctrl->clk_ptr,
-				ctrl->clk_info_size, true);
+
+			if (ctrl->clk_ptr) {
+				rc = msm_camera_clk_enable(ctrl->dev,
+					ctrl->clk_info, ctrl->clk_ptr,
+					ctrl->clk_info_size, true);
+			} else {
+				pr_err("%s: clk_ptr is null\n", __func__);
+				goto power_up_failed;
+			}
+
 			if (rc < 0) {
 				pr_err("%s: clk enable failed\n", __func__);
 				goto power_up_failed;
@@ -1797,8 +1805,13 @@ int msm_camera_power_down(struct msm_camera_power_ctrl_t *ctrl,
 			} else
 				pr_err("%s error in power up/down seq data\n",
 								__func__);
+#ifdef CONFIG_ZTE_CAMERA_GPIO_KEEP_HIGH
+			ret = msm_cam_sensor_handle_reg_gpio(pd->seq_val,
+				ctrl->gpio_conf, GPIOF_OUT_INIT_HIGH);
+#else
 			ret = msm_cam_sensor_handle_reg_gpio(pd->seq_val,
 				ctrl->gpio_conf, GPIOF_OUT_INIT_LOW);
+#endif
 			if (ret < 0)
 				pr_err("ERR:%s Error while disabling VREG GPIO\n",
 					__func__);
