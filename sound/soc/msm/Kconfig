@@ -109,6 +109,25 @@ config SND_SOC_APQ8084
 	 the machine drivers and the corresponding
 	 DAI-links.
 
+#ZTE_MODIFY by weiguohua for speaker amp 20171114 start
+config ZTE_USE_AMP_AW87316
+     tristate "USE_AMP_AW87316"
+
+config ZTE_2TO1_REC_USE_QUAL
+	tristate "2to1_REC_USE_QUAL"
+
+config ZTE_HS_SPK_ANA_SWITCH
+	tristate "ZTE_HS_SPK_ANA_SWITCH"
+
+config ZTE_USE_AMP_AW87316_MODE1
+     tristate "USE_AMP_AW87316_MODE1"
+	 depends on ZTE_USE_AMP_AW87316
+
+config ZTE_USE_AMP_AW87316_MODE2
+     tristate "USE_AMP_AW87316_MODE2"
+	 depends on ZTE_USE_AMP_AW87316
+#ZTE_MODIFY by weiguohua for speaker amp 20171114 end
+
 config SND_SOC_MSM8994
 	tristate "SoC Machine driver for MSM8994 boards"
 	depends on ARCH_MSM8994
@@ -272,4 +291,6 @@ config SND_SOC_MDM9640
 	 the machine drivers and the corresponding
 	 DAI-links.
 
+config NORTH_AMERCICAN_HEADSET
+	bool "American headset detection"
 endmenu
